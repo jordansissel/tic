@@ -1,0 +1,284 @@
+#!/usr/bin/perl 
+# $Id$
+
+use strict;
+use IO::Select;
+use Net::OSCAR qw/:standard/;
+use POSIX qw(strftime);
+use Term::Shelly;
+use Exporter;
+use lib '/u9/psionic/projects/tic';
+use lib '/u9/psionic/projects/';
+
+# Super-magical happy land!
+use Tic::Constants; 
+use Tic::Common;
+use Tic::Commands;
+use Tic::Events;
+use Tic::Bindings;
+
+mkdir($ENV{HOME}."/.tic", "0700") unless (-d $ENV{HOME} . "/.tic");
+
+my $aliases = undef;   # Aliases
+my $commands = undef;  # Commands
+my $config = DEFAULT_CONFIG;
+my $settings = { };
+
+my $state = undef;     # State information
+$state->{"config"} = $config;
+$state->{"settings"} = $settings;
+
+my $aim = Net::OSCAR->new(capabilities => [ "typing_status" ]);
+#$aim->timeout(1);
+$state->{"aim"} = $aim;
+
+setup_callbacks();
+setup_commands();
+
+my $sh = new Term::Shelly();
+$state->{"sh"} = $sh;
+
+# Set the callback for when we hit an end of line in input...
+$sh->{"readline_callback"} = \&command;
+$state->{"command_callback"} = \&command;
+
+Tic::Events->set_state($state);
+Tic::Commands->set_state($state);
+#Tic::Common->set_state($state);
+Tic::Bindings->set_state($state);
+
+read_config($ENV{HOME}."/.ticrc");
+setup_enviroment();
+
+#load("Tic::Feature::X11Idle");
+
+login(get_config("screenname"), get_config("password"));
+$sh->{"supress_newline_echo"} = 1;
+
+#$state->{"is_idle"} = 0;
+$state->{"aim_ok"} = 1;
+
+while (1) {
+	$aim->do_one_loop();
+	$sh->do_one_loop();
+
+	# Some things (like typing-checking) depends on delays
+	do_check_typing();
+
+	# Are we idle?
+	if ($aim->is_on) {
+		if ($state->{"settings"}->{"use_idle"}) {
+			$state->{"idle_callback"}->();
+		}
+	}
+}
+
+sub check_idle {
+	if (($state->{"is_idle"} != 1) && 
+		 ($state->{"idle"} + get_config("idle_timeout") < time())) {
+		#$sh->out("idle: " . $state->{"idle"} . " / " . get_config("idle_timeout"));
+		#$sh->out("Setting idle - " . $state->{"idle"} . " / " . get_config("idle_timeout") . " / " . time());
+		#$aim->set_idle(get_config("idle_timeout"));
+		#$state->{"is_idle"} = 1;
+	}
+}
+# init functions
+
+sub setup_callbacks {
+	$aim->set_callback_admin_error(\&event_admin_error);
+	$aim->set_callback_admin_ok(\&event_admin_ok);
+	$aim->set_callback_buddy_in(\&event_buddy_in);
+	$aim->set_callback_buddy_info(\&event_buddy_info);
+	$aim->set_callback_buddy_out(\&event_buddy_out);
+	$aim->set_callback_buddylist_error(\&event_buddylist_error);
+	$aim->set_callback_buddylist_ok(\&event_buddylist_ok);
+	$aim->set_callback_chat_buddy_in(\&event_chat_buddy_in);
+	$aim->set_callback_chat_buddy_out(\&event_chat_buddy_out);
+	$aim->set_callback_chat_closed(\&event_chat_closed);
+	$aim->set_callback_chat_im_in(\&event_chat_im_in);
+	$aim->set_callback_chat_invite(\&event_chat_invite);
+	$aim->set_callback_chat_joined(\&event_chat_joined);
+	$aim->set_callback_connection_changed(\&event_connection_changed);
+	$aim->set_callback_error(\&event_error);
+	$aim->set_callback_evil(\&event_evil);
+	$aim->set_callback_im_in(\&event_im_in);
+	$aim->set_callback_im_ok(\&event_im_ok);
+	$aim->set_callback_rate_alert(\&event_rate_alert);
+	$aim->set_callback_signon_done(\&event_signon_done);
+
+	$state->{"idle_callback"} = \&check_idle
+}
+
+sub setup_commands {
+	$commands = {
+		"addbuddy"  => \&command_addbuddy,
+		"alias"     => \&command_alias,
+		"away"      => \&command_away,
+		"buddylist" => \&command_buddylist,
+		"date"      => \&command_date,
+		"default"   => \&command_default,
+		"delbuddy"  => \&command_delbuddy,
+		"echo"      => \&command_echo,
+		"getaway"   => \&command_getaway,
+		"help"      => \&command_help,
+		"ignore"    => \&command_ignore,
+		"info"      => \&command_info,
+		"log"       => \&command_log,
+		"login"     => \&command_login,
+		"msg"       => \&command_msg,
+		"quit"      => \&command_quit,
+		"set"       => \&command_set,
+		"timestamp" => \&command_timestamp,
+		"unalias"   => \&command_unalias,
+		"undefault" => \&command_undefault,
+		"unignore"  => \&command_unignore,
+		"who"       => \&command_who,
+	};
+	$aliases = {
+		"a" => "/alias",
+		"m" => "/msg",
+		"i" => "/info",
+		"b" => "/buddylist",
+		"w" => "/who",
+	};
+
+	$state->{"aliases"} = $aliases;
+	$state->{"commands"} = $commands;
+}
+
+sub setup_enviroment {
+	foreach my $key (keys(%{$config})) {
+		#out("$key: " . $settings->{$key});
+		if ($key =~ m/^log\.([^\.]+)$/) {
+			set_config("logging","only specified users");
+			get_config("who_log")->{"$1"} = 1;
+			#$state->{"logging"}->{"who_log"}->{"$1"} = $settings->{"$key"};
+		} elsif ($key eq 'log') {
+			set_config("logging", $settings->{"$key"});
+		} elsif ($key eq 'timestamp') {
+			command_timestamp($state,$settings->{"$key"});
+		} elsif ($key eq 'timestamp_fmt') {
+			set_config("timestamp",$settings->{"$key"});
+		} elsif ($key eq 'idle_method') {
+		}
+	}
+
+	# I'm confused why I wrote these lines :(
+	get_config("logging");
+	get_config("who_log");
+}
+
+sub command {
+	my $line = shift;
+	my ($cmd,$args) = split(/\s+/, $line, 2);
+
+   if ($cmd =~ s!^/!!) {
+		if (defined($commands->{$cmd})) { 
+			&{$commands->{$cmd}}($state, $args);
+		} elsif (defined($aliases->{$cmd})) {
+			$state->{"recursion_check"}++;
+			if ($state->{"recursion_check"} > 10) {
+				$sh->out("Too much recursion in this alias. Aborting execution");
+				return;
+			}
+			($cmd, $args) = $aliases->{$cmd} . " " . $args;
+			command($cmd,$args);
+			$state->{"recursion_check"}--;
+		} else {
+			$sh->out("Unknown command, \"$cmd\"");
+		}
+	} elsif ($line !~ m/^\s+$/) {
+		my $target = $state->{"target"} || $state->{"default"};
+		command_msg($state, $target, $line) if ($target);
+
+		# Immediately reset to default target or nothing.
+		prompter("TARGET", $state->{"default"} || '');
+	}
+}
+
+
+sub read_config {
+	my ($file) = shift;
+
+	if ( -r $file ) {
+		open(FILE,"< $file") or die("Failed trying to read $file (Unexpected!).\n$!\n");
+
+		my $c = 0;
+		while (my $line = <FILE>) {
+			$c++;
+			next if ($line =~ m/^(?:#|\s*$)/);
+			chomp($line);
+			$line =~ s/#.*$//;
+			if ($line =~ m/^(
+								  screenname|password|server|port|log|log\.[^\.]+|
+								  timestamp|timestamp_fmt|idle_timeout|use_idle|
+								  idle_method
+								  )(?:\s|=)/ix) {
+				if ($line =~ m/(\S+)\s*=\s*(.+)$/) {
+					$state->{"settings"}->{lc($1)} = $2;
+					if ($1 eq 'log') {
+						command_log($state,$2);
+					}
+				} else {
+					print STDERR "Syntax error on line $c of $file:\n$line\n";
+				}
+			} else {
+				print STDERR "Invalid option on line $c of $file:\n$line\n";
+			}
+		}
+		close(FILE);
+	} 
+}
+
+# Check if we're typing. If we've stopped typing, tell the other person so...
+sub do_check_typing {
+	# $state->{"typing_status"}
+	
+	if (defined($state->{"typing_status"}) && 
+		 $state->{"typing_status"}->{"status"} == TYPINGSTATUS_STARTED &&
+		 $state->{"typing_status"}->{"time"} + 3 < time()) {
+		my $sn = $state->{"typing_status"}->{"sn"};
+		$state->{"aim"}->send_typing_status($sn, TYPINGSTATUS_TYPING);
+		$state->{"typing_status"}->{"status"} = TYPINGSTATUS_TYPING;
+	}
+}
+
+
+__END__
+__C__
+
+#include <X11/Xlib.h>
+#include <X11/extensions/scrnsaver.h>
+#include <stdio.h>
+
+static Display *dpy;
+static Window rootwin;
+
+int XConnect(char* display) {
+	if (dpy == NULL) {
+		if ( (dpy = XOpenDisplay(display)) == NULL) {
+			fprintf(stderr, "Error: Can't open display: %s\n", display);
+			return 0;
+		}
+		rootwin = XDefaultRootWindow(dpy);
+	}
+	return 1;
+}
+
+int XGetIdle() {
+	static XScreenSaverInfo *mit_info = NULL;
+	int event_base, error_base;
+	int idle = 0;
+
+	if (XScreenSaverQueryExtension(dpy, &event_base, &error_base)) {
+		if (mit_info == NULL) {
+			mit_info = XScreenSaverAllocInfo();
+		}
+		XScreenSaverQueryInfo(dpy, rootwin, mit_info);
+		idle = (mit_info->idle) / 1000;
+	} else {
+		fprintf(stderr, "XScreenSaverExtension not available on this display\n");
+	}
+
+	return idle;
+}

@@ -1,0 +1,55 @@
+#!/usr/bin/perl 
+
+use strict;
+
+BEGIN {
+	# This is a hack, but hey, it's perl :)
+	
+	sub tryload {
+		my $module = shift;
+
+		# Is this necessary?
+		my $file = $module;
+		$file =~ s!::!/!g;
+		$file .= ".pm";
+
+		# Try loading the module, if it actually exists...
+		TRYLOAD: {
+			foreach my $prefix (@INC) {
+				if (-f "$prefix/$file") {
+					require "$prefix/$file";
+					$INC{$module} = "$prefix/$file";
+					last TRYLOAD;
+				}
+			}
+			# failed.
+			return 0;
+		}
+
+		import $module @_;
+		
+		return 1;
+	}
+
+	if (!tryload("Inline", qw(C))) {
+		print STDERR "Failed trying to load Inline\n";
+	}
+}
+
+if ($INC{"Inline"}) {
+	print "Inline loaded!\n";
+	foo();
+} else {
+	print "Inline module failed loading\n";
+}
+
+
+__END__
+__C__
+
+#include <stdio.h>
+
+void foo() {
+	printf("Hello!\n");
+}
+
