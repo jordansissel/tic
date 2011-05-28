@@ -31,7 +31,8 @@ sub set_state {
 	$sh->{"mappings"}->{"complete-lastfrom"} = \&complete_lastfrom;
 
 	#$sh->out("Ref: " . ref($sh->{"mappings"}->{"kill-line"}));
-	push(@{$sh->{"mappings"}->{"kill-line"}}, \&killline_binding);
+  #push(@{$sh->{"mappings"}->{"kill-line"}}, \&killline_binding);
+  $sh->{"mappings"}->{"kill-line"} = \&killline_binding;
 	$sh->{"completion_function"} = \&completer;
 	$sh->{"anykey_callback"} = \&anykey_binding;
 	$sh->{"fardelete_callback"} = \&fardelete_callback;

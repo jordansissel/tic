@@ -1,0 +1,8 @@
+Requirements:
+
+Net::OSCAR
+Term::Shelly
+
+Run:
+
+./tic
